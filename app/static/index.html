@@ -17,7 +17,25 @@
     </header>
 
     <form class="panel" id="import-form">
-      <label for="links">Image links <span class="hint">one direct link per line, lines starting with # are ignored</span></label>
+      <label for="account-select">Upload as</label>
+      <div class="row account-row">
+        <select id="account-select"></select>
+        <button type="button" id="manage-accounts" aria-expanded="false">Manage accounts</button>
+      </div>
+
+      <div class="subpanel" id="accounts-panel" hidden>
+        <h3>Accounts</h3>
+        <p class="hint">Each account is a Slink API key (Slink → Profile → API Keys). Keys are stored on the server and never shown again.</p>
+        <ul class="collection-list" id="account-list"></ul>
+        <div class="row">
+          <input type="text" id="new-account-name" placeholder="Name, e.g. Personal" maxlength="100">
+          <input type="password" id="new-account-key" placeholder="API key (sk_…)" autocomplete="off">
+          <button type="button" id="add-account">Save</button>
+        </div>
+        <span class="error" id="account-error"></span>
+      </div>
+
+      <label for="links" class="spaced-label">Image links <span class="hint">one direct link per line, lines starting with # are ignored</span></label>
       <textarea id="links" placeholder="https://i.postimg.cc/xxxxxxxx/image.jpg" required></textarea>
 
       <div class="grid">
@@ -47,7 +65,7 @@
       </div>
 
       <div class="subpanel" id="collections-panel" hidden>
-        <h3>Saved collections</h3>
+        <h3>Saved collections for <span id="collections-account-name"></span></h3>
         <ul class="collection-list" id="collection-list"></ul>
         <div class="row">
           <input type="text" id="new-collection-name" placeholder="Name" maxlength="100">
@@ -95,6 +113,94 @@
     let currentJob = null;
     let pollTimer = null;
     let savedCollections = [];
+    let accounts = [];
+    let defaultCollection = "";
+
+    function selectedAccount() {
+      return $("account-select").value;
+    }
+
+    function accountName(id) {
+      if (!id) return "";
+      const found = accounts.find((a) => a.id === id);
+      return found ? found.name : "removed account";
+    }
+
+    function accountCollections() {
+      return savedCollections.filter((c) => c.account === selectedAccount());
+    }
+
+    function rememberedCollection() {
+      const account = selectedAccount();
+      const stored = localStorage.getItem(`collection:${account}`);
+      if (stored !== null) return stored;
+      // Before accounts existed, the last collection was stored under one key
+      if (account === "default") return localStorage.getItem("collection") ?? defaultCollection;
+      return "";
+    }
+
+    function renderAccounts() {
+      const current = selectedAccount() || localStorage.getItem("account");
+      $("account-select").replaceChildren(...(accounts.length
+        ? accounts.map((a) => el("option", { value: a.id }, a.name))
+        : [el("option", { value: "" }, "No accounts yet, add one with Manage accounts")]));
+      if (accounts.some((a) => a.id === current)) $("account-select").value = current;
+      $("account-select").disabled = !accounts.length;
+      $("submit").disabled = !accounts.length;
+
+      $("account-list").replaceChildren(...(accounts.length ? accounts.map((a) => {
+        const details = el("span", {}, el("b", {}, a.name),
+          el("small", {}, a.builtin ? `${a.keyHint} · from SLINK_API_KEY` : a.keyHint));
+        if (a.builtin) return el("li", {}, details);
+        const remove = el("button", { type: "button", className: "small", title: `Remove ${a.name}` }, "Remove");
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Remove account "${a.name}"? Its saved collections and import history are removed too. Images already in Slink are not affected.`)) return;
+          try {
+            await api(`accounts/${a.id}`, { method: "DELETE" });
+            await loadAccounts();
+          } catch (err) {
+            $("account-error").textContent = err.message;
+          }
+        });
+        return el("li", {}, details, remove);
+      }) : [el("li", { className: "hint" }, "None saved yet")]));
+    }
+
+    async function loadAccounts() {
+      accounts = await api("accounts");
+      renderAccounts();
+      await loadCollections(rememberedCollection());
+      if (!accounts.length) toggleAccountsPanel(true);
+    }
+
+    async function addAccount() {
+      $("account-error").textContent = "";
+      try {
+        const saved = await api("accounts", {
+          method: "POST",
+          body: JSON.stringify({ name: $("new-account-name").value, key: $("new-account-key").value }),
+        });
+        $("new-account-name").value = "";
+        $("new-account-key").value = "";
+        await loadAccounts();
+        $("account-select").value = saved.id;
+        onAccountChange();
+      } catch (err) {
+        $("account-error").textContent = err.message;
+      }
+    }
+
+    function onAccountChange() {
+      localStorage.setItem("account", selectedAccount());
+      renderCollections(rememberedCollection());
+    }
+
+    function toggleAccountsPanel(open) {
+      const panel = $("accounts-panel");
+      panel.hidden = !open;
+      $("manage-accounts").setAttribute("aria-expanded", String(open));
+      if (open) $("new-account-name").focus();
+    }
 
     // Last path segment of a collection URL, or the ID itself
     function collectionId(value) {
@@ -114,22 +220,23 @@
     // Show `value` (saved ID, pasted link, or empty) in the dropdown
     function selectCollection(value) {
       const id = collectionId(value);
-      const saved = savedCollections.some((c) => c.id === id);
+      const saved = accountCollections().some((c) => c.id === id);
       $("collection-select").value = !value ? "" : saved ? id : OTHER;
       $("collection").value = saved || !value ? "" : value;
       $("collection").hidden = $("collection-select").value !== OTHER;
     }
 
-    function renderCollections() {
-      const current = selectedCollection();
+    function renderCollections(selected = selectedCollection()) {
+      const mine = accountCollections();
+      $("collections-account-name").textContent = accountName(selectedAccount());
       $("collection-select").replaceChildren(
         el("option", { value: "" }, "No collection"),
-        ...savedCollections.map((c) => el("option", { value: c.id }, c.name)),
+        ...mine.map((c) => el("option", { value: c.id }, c.name)),
         el("option", { value: OTHER }, "Other link…"),
       );
-      selectCollection(current);
+      selectCollection(selected);
 
-      $("collection-list").replaceChildren(...(savedCollections.length ? savedCollections.map((c) => {
+      $("collection-list").replaceChildren(...(mine.length ? mine.map((c) => {
         const remove = el("button", { type: "button", className: "small", title: `Remove ${c.name}` }, "Remove");
         remove.addEventListener("click", async () => {
           if (!confirm(`Remove saved collection "${c.name}"? The collection in Slink is not affected.`)) return;
@@ -144,9 +251,9 @@
       }) : [el("li", { className: "hint" }, "None saved yet")]));
     }
 
-    async function loadCollections() {
+    async function loadCollections(selected) {
       savedCollections = await api("collections");
-      renderCollections();
+      renderCollections(selected);
     }
 
     async function addCollection() {
@@ -154,12 +261,15 @@
       try {
         const saved = await api("collections", {
           method: "POST",
-          body: JSON.stringify({ name: $("new-collection-name").value, link: $("new-collection-link").value }),
+          body: JSON.stringify({
+            name: $("new-collection-name").value,
+            link: $("new-collection-link").value,
+            account: selectedAccount(),
+          }),
         });
         $("new-collection-name").value = "";
         $("new-collection-link").value = "";
-        await loadCollections();
-        selectCollection(saved.id);
+        await loadCollections(saved.id);
       } catch (err) {
         $("collection-error").textContent = err.message;
       }
@@ -212,6 +322,7 @@
 
       $("job-summary").replaceChildren(
         ...[["Done", `${finished}/${c.total}`], ["OK", c.ok], ["Failed", c.failed], ["Skipped", c.skipped],
+            ["Account", job.account.name],
             ["Collection", job.options.collectionIds.map(collectionName).join(", ") || "none"],
             ["Started", formatTime(job.created)]]
           .map(([k, v]) => el("span", {}, `${k}: `, el("b", {}, String(v))))
@@ -254,7 +365,7 @@
         const li = el("li", {},
           el("span", { className: `status ${job.status === "done" ? (job.counts.failed ? "failed" : "ok") : job.status}` },
             job.status === "done" ? (job.counts.failed ? "Some failed" : "Done") : job.status),
-          ` · ${formatTime(job.created)} · ${summaryText(job.counts)}`);
+          ` · ${formatTime(job.created)} · ${job.account.name} · ${summaryText(job.counts)}`);
         li.addEventListener("click", () => { $("job-error").textContent = ""; showJob(job.id); });
         return li;
       }));
@@ -271,6 +382,7 @@
           method: "POST",
           body: JSON.stringify({
             links: $("links").value,
+            account: selectedAccount(),
             public: $("public").checked,
             collection,
             description: $("description").value,
@@ -278,7 +390,7 @@
             force: $("force").checked,
           }),
         });
-        localStorage.setItem("collection", collection);
+        localStorage.setItem(`collection:${selectedAccount()}`, collection);
         localStorage.setItem("public", $("public").checked ? "1" : "0");
         $("links").value = "";
         $("force").checked = false;
@@ -286,7 +398,7 @@
       } catch (err) {
         $("form-error").textContent = err.message;
       } finally {
-        $("submit").disabled = false;
+        $("submit").disabled = !accounts.length;
       }
     });
 
@@ -324,13 +436,23 @@
       $("new-collection-name").focus();
     });
 
+    $("account-select").addEventListener("change", onAccountChange);
+    $("manage-accounts").addEventListener("click", () => toggleAccountsPanel($("accounts-panel").hidden));
+    $("add-account").addEventListener("click", addAccount);
     $("add-collection").addEventListener("click", addCollection);
-    for (const id of ["new-collection-name", "new-collection-link"]) {
-      // Enter saves the collection instead of submitting the import form
+
+    // Enter in the "add" fields saves instead of submitting the import form
+    const enterActions = {
+      "new-collection-name": addCollection,
+      "new-collection-link": addCollection,
+      "new-account-name": addAccount,
+      "new-account-key": addAccount,
+    };
+    for (const [id, action] of Object.entries(enterActions)) {
       $(id).addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           event.preventDefault();
-          addCollection();
+          action();
         }
       });
     }
@@ -345,8 +467,8 @@
       $("slink-link").href = config.slinkUrl;
       $("workers").value = config.workers;
       $("workers").max = config.maxWorkers;
-      await loadCollections();
-      selectCollection(localStorage.getItem("collection") ?? config.defaultCollection);
+      defaultCollection = config.defaultCollection;
+      await loadAccounts();
       const savedPublic = localStorage.getItem("public");
       $(savedPublic === null ? (config.defaultPublic ? "public" : "private") : savedPublic === "1" ? "public" : "private").checked = true;
 

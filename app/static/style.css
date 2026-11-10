@@ -130,6 +130,10 @@ button:disabled { opacity: 0.55; cursor: default; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row > input, .row > select { flex: 1; min-width: 0; }
 .spaced { margin-top: 8px; }
+.spaced-label { margin-top: 18px; }
+.account-row { max-width: 520px; }
+.subpanel p.hint { margin: 0 0 10px; }
+.subpanel input[type="password"] { background: var(--panel); }
 
 .subpanel {
   margin-top: 14px;
