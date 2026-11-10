@@ -130,6 +130,8 @@ def upload(
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": monitor.content_type,
+                # Slink's SvelteKit frontend rejects form POSTs without a same-site Origin
+                "Origin": base_url,
             },
             data=monitor,
             timeout=120,
