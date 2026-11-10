@@ -4,7 +4,8 @@ A small web UI that imports images from direct links (e.g. `https://i.postimg.cc
 [Slink](https://github.com/andrii-kryvoviaz/slink) instance. The server downloads each image and
 uploads it to Slink through the external upload API, several at a time.
 
-- Paste links (one per line), choose Private/Public and an optional collection
+- Paste links (one per line), choose the account, Private/Public and an optional collection
+- Upload to several Slink accounts by saving an API key for each
 - Live progress per link, with the new Slink URL for each
 - Failed links can be retried with one click or downloaded as `failed-links.txt`
 - Links that were already imported are skipped (unless you tick "re-upload")
@@ -15,7 +16,7 @@ uploads it to Slink through the external upload API, several at a time.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `SLINK_URL` | required | Public address of Slink, e.g. `https://i.hellish.dev`. Also sent as the `Origin` header, which Slink requires. |
-| `SLINK_API_KEY` | required | Slink API key (Profile → API Keys). `SLINK_API_KEY_FILE` can point to a file instead. |
+| `SLINK_API_KEY` | optional | Slink API key (Profile → API Keys), shown as the built-in **Default** account. `SLINK_API_KEY_FILE` can point to a file instead. Leave empty to only use accounts added in the UI. |
 | `UI_PASSWORD` | required | Password for the web UI. `UI_PASSWORD_FILE` also works. |
 | `SESSION_SECRET` | random | Signs the login cookie. Set it (e.g. `openssl rand -hex 32`) to stay logged in across restarts. |
 | `PORT` | `8080` | Port the server listens on. |
@@ -26,12 +27,25 @@ uploads it to Slink through the external upload API, several at a time.
 | `DEFAULT_COLLECTION` | empty | Default collection ID or URL in the form. |
 | `MAX_IMAGE_MB` | `50` | Images larger than this are rejected. |
 | `PUID` / `PGID` | `10001` | User and group the app runs as. Set them to the owner of the data directory (`id -u` / `id -g` on the host) when using a bind mount. On startup the data directory is handed to this user. |
-| `DATA_DIR` | `/data` | Where `state.json` (imported links), `jobs.json` (history) and `collections.json` (saved collections) are stored. |
+| `DATA_DIR` | `/data` | Where `accounts.json` (saved API keys, mode 600), `collections.json` (saved collections), `jobs.json` (history) and `state*.json` (imported links per account) are stored. |
+
+### Accounts
+
+**Upload as** picks the Slink account to upload with. Use **Manage accounts** to add an account
+by name and API key; keys are stored on the server and are never sent back to the browser (only
+a hint like `sk_…ab12`). Removing an account also removes its saved collections and its
+imported-links record; images already in Slink are not touched.
+
+Each account has its own record of imported links, so the same link can be imported once per
+account. The `SLINK_API_KEY` account keeps the history from before accounts existed.
+
+### Collections
 
 Collections are picked from a dropdown. Use **Manage** to save a collection under a name by
-pasting its link (`/collection/<id>`) or ID once; saved collections are stored on the server, so
-they're available in every browser. **Other link…** imports into an unsaved collection. Slink API
-keys can't list or create collections, so create the collection in Slink first.
+pasting its link (`/collection/<id>`) or ID once. Slink collections belong to one user, so each
+saved collection is tied to the account it was saved for and only appears when that account is
+selected. **Other link…** imports into an unsaved collection. Slink API keys can't list or create
+collections, so create the collection in Slink first.
 
 ## Deploying with Portainer
 
@@ -43,8 +57,8 @@ The GitHub workflow publishes `ghcr.io/love-not-found/slink-import` (`latest` on
    Package settings → Change visibility. (If you keep it private, add `ghcr.io` as a registry in
    Portainer with a GitHub token that has `read:packages`.)
 3. In Portainer: **Stacks → Add stack**, paste [`docker-compose.yml`](docker-compose.yml) into
-   the web editor, and add the environment variables (at least `SLINK_URL`, `SLINK_API_KEY`,
-   `UI_PASSWORD`, and ideally `SESSION_SECRET`).
+   the web editor, and add the environment variables (at least `SLINK_URL` and `UI_PASSWORD`,
+   ideally `SESSION_SECRET`, and optionally `SLINK_API_KEY`).
 4. Deploy. To update later, use **Pull and redeploy** on the stack.
 
 The UI is then available at `http://<server>:<PORT>/import/`.

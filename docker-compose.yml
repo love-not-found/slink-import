@@ -11,8 +11,9 @@ services:
       PGID: ${PGID:-10001}
       # Public address of your Slink instance (also sent as the Origin header)
       SLINK_URL: ${SLINK_URL:?set SLINK_URL, e.g. https://i.hellish.dev}
-      # Slink API key (Profile -> API Keys)
-      SLINK_API_KEY: ${SLINK_API_KEY:?set SLINK_API_KEY}
+      # Optional Slink API key (Profile -> API Keys), shown as the "Default" account.
+      # More accounts can be added in the UI under "Manage accounts".
+      SLINK_API_KEY: ${SLINK_API_KEY:-}
       # Password for the web UI
       UI_PASSWORD: ${UI_PASSWORD:?set UI_PASSWORD}
       # Keeps you logged in across restarts; any long random string (openssl rand -hex 32)
