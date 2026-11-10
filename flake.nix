@@ -1,5 +1,5 @@
 {
-  description = "Import images from postimg.cc direct links into Slink";
+  description = "Web UI to import images from direct links into Slink";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -19,9 +19,10 @@
           let
             pkgs = nixpkgs.legacyPackages.${system};
             python = pkgs.python3.withPackages (ps: [
+              ps.fastapi
+              ps.uvicorn
               ps.requests
-              ps.requests-toolbelt
-              ps.tqdm
+              ps.itsdangerous
             ]);
           in
           f { inherit pkgs python; }
@@ -41,7 +42,10 @@
           default = pkgs.writeShellApplication {
             name = "slink-import";
             runtimeInputs = [ python ];
-            text = ''exec python ${./slink_import.py} "$@"'';
+            text = ''
+              export PYTHONPATH=${./.}
+              exec python -m app "$@"
+            '';
           };
         }
       );
