@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slink importer</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Slink importer</h1>
+      <div class="actions" style="margin: 0">
+        <a class="button" id="slink-link" href="#" target="_blank" rel="noopener">Open Slink</a>
+        <button id="logout">Log out</button>
+      </div>
+    </header>
+
+    <form class="panel" id="import-form">
+      <label for="links">Image links <span class="hint">one direct link per line, lines starting with # are ignored</span></label>
+      <textarea id="links" placeholder="https://i.postimg.cc/xxxxxxxx/image.jpg" required></textarea>
+
+      <div class="grid">
+        <div>
+          <label>Visibility</label>
+          <div class="segmented">
+            <input type="radio" name="visibility" id="private" value="private" checked><label for="private">Private</label>
+            <input type="radio" name="visibility" id="public" value="public"><label for="public">Public</label>
+          </div>
+        </div>
+        <div>
+          <label for="collection">Collection <span class="hint">ID or URL, optional</span></label>
+          <input type="text" id="collection" placeholder="https://…/collection/&lt;id&gt;">
+        </div>
+        <div>
+          <label for="description">Description <span class="hint">optional</span></label>
+          <input type="text" id="description" maxlength="255" placeholder="e.g. Imported from {url}">
+        </div>
+        <div>
+          <label for="workers">Parallel uploads</label>
+          <input type="number" id="workers" min="1">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="submit" id="submit">Import</button>
+        <label class="check"><input type="checkbox" id="force"> Re-upload links that were already imported</label>
+        <span class="error" id="form-error"></span>
+      </div>
+    </form>
+
+    <section class="panel" id="job" hidden>
+      <h2 id="job-title"></h2>
+      <div class="bar"><div id="job-bar"></div></div>
+      <div class="summary" id="job-summary"></div>
+      <div class="actions">
+        <button id="retry" hidden>Retry failed</button>
+        <a class="button" id="download-failed" hidden>Download failed-links.txt</a>
+        <button id="copy-urls" hidden>Copy Slink URLs</button>
+        <span class="error" id="job-error"></span>
+      </div>
+      <table>
+        <thead><tr><th>Status</th><th>Link</th><th>Slink</th></tr></thead>
+        <tbody id="job-items"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>History</h2>
+      <ul class="history" id="history"><li class="hint">No imports yet</li></ul>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const STATUS_LABEL = { ok: "OK", failed: "Failed", running: "Uploading", pending: "Waiting", skipped: "Skipped" };
+    let currentJob = null;
+    let pollTimer = null;
+
+    async function api(path, options = {}) {
+      const resp = await fetch(`api/${path}`, {
+        ...options,
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      });
+      if (resp.status === 401) {
+        location.href = "login";
+        throw new Error("login required");
+      }
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.msg).join(", ") : data.detail;
+        throw new Error(detail || `Error ${resp.status}`);
+      }
+      return data;
+    }
+
+    function el(tag, props = {}, ...children) {
+      const node = Object.assign(document.createElement(tag), props);
+      node.append(...children);
+      return node;
+    }
+
+    function formatTime(iso) {
+      return new Date(iso).toLocaleString();
+    }
+
+    function summaryText(counts) {
+      const parts = [`${counts.ok} ok`, `${counts.failed} failed`];
+      if (counts.skipped) parts.push(`${counts.skipped} skipped`);
+      return `${counts.total} links · ${parts.join(" · ")}`;
+    }
+
+    function renderJob(job) {
+      currentJob = job;
+      const c = job.counts;
+      const finished = c.ok + c.failed + c.skipped;
+      $("job").hidden = false;
+      $("job-title").textContent =
+        job.status === "running" ? "Importing…" :
+        job.status === "queued" ? "Queued" :
+        job.status === "interrupted" ? "Interrupted" :
+        job.status === "error" ? "Stopped with an error" : "Import finished";
+      $("job-bar").style.width = c.total ? `${(finished / c.total) * 100}%` : "0";
+
+      $("job-summary").replaceChildren(
+        ...[["Done", `${finished}/${c.total}`], ["OK", c.ok], ["Failed", c.failed], ["Skipped", c.skipped],
+            ["Started", formatTime(job.created)]]
+          .map(([k, v]) => el("span", {}, `${k}: `, el("b", {}, String(v))))
+      );
+
+      const active = job.status === "running" || job.status === "queued";
+      $("retry").hidden = active || c.failed === 0;
+      $("download-failed").hidden = c.failed === 0;
+      $("download-failed").href = `api/jobs/${job.id}/failed-links.txt`;
+      $("copy-urls").hidden = c.ok + c.skipped === 0;
+
+      $("job-items").replaceChildren(...job.items.map((item) => {
+        const linkCell = el("td", { className: "link" }, item.link);
+        if (item.error) linkCell.append(el("small", {}, item.error));
+        const slinkCell = el("td");
+        if (item.url) slinkCell.append(el("a", { href: item.url, target: "_blank", rel: "noopener" }, item.url.replace(/^https?:\/\/[^/]+\//, "")));
+        return el("tr", {},
+          el("td", {}, el("span", { className: `status ${item.status}` }, STATUS_LABEL[item.status] || item.status)),
+          linkCell, slinkCell);
+      }));
+
+      clearTimeout(pollTimer);
+      if (active) pollTimer = setTimeout(() => showJob(job.id), 1000);
+      else loadHistory();
+    }
+
+    async function showJob(id) {
+      try {
+        renderJob(await api(`jobs/${id}`));
+      } catch (err) {
+        $("job-error").textContent = err.message;
+        pollTimer = setTimeout(() => showJob(id), 3000);
+      }
+    }
+
+    async function loadHistory() {
+      const jobs = await api("jobs");
+      if (!jobs.length) return;
+      $("history").replaceChildren(...jobs.map((job) => {
+        const li = el("li", {},
+          el("span", { className: `status ${job.status === "done" ? (job.counts.failed ? "failed" : "ok") : job.status}` },
+            job.status === "done" ? (job.counts.failed ? "Some failed" : "Done") : job.status),
+          ` · ${formatTime(job.created)} · ${summaryText(job.counts)}`);
+        li.addEventListener("click", () => { $("job-error").textContent = ""; showJob(job.id); });
+        return li;
+      }));
+      return jobs;
+    }
+
+    $("import-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("form-error").textContent = "";
+      $("submit").disabled = true;
+      try {
+        const collection = $("collection").value.trim();
+        const job = await api("jobs", {
+          method: "POST",
+          body: JSON.stringify({
+            links: $("links").value,
+            public: $("public").checked,
+            collection,
+            description: $("description").value,
+            workers: Number($("workers").value) || null,
+            force: $("force").checked,
+          }),
+        });
+        localStorage.setItem("collection", collection);
+        localStorage.setItem("public", $("public").checked ? "1" : "0");
+        $("links").value = "";
+        $("force").checked = false;
+        renderJob(job);
+      } catch (err) {
+        $("form-error").textContent = err.message;
+      } finally {
+        $("submit").disabled = false;
+      }
+    });
+
+    $("retry").addEventListener("click", async () => {
+      $("job-error").textContent = "";
+      try {
+        renderJob(await api(`jobs/${currentJob.id}/retry`, { method: "POST", body: "{}" }));
+      } catch (err) {
+        $("job-error").textContent = err.message;
+      }
+    });
+
+    $("copy-urls").addEventListener("click", async () => {
+      const urls = currentJob.items.filter((i) => i.url).map((i) => i.url).join("\n");
+      await navigator.clipboard.writeText(urls);
+      $("copy-urls").textContent = "Copied!";
+      setTimeout(() => ($("copy-urls").textContent = "Copy Slink URLs"), 1500);
+    });
+
+    $("logout").addEventListener("click", async () => {
+      await fetch("auth/logout", { method: "POST" });
+      location.href = "login";
+    });
+
+    (async () => {
+      const config = await api("config");
+      $("slink-link").href = config.slinkUrl;
+      $("workers").value = config.workers;
+      $("workers").max = config.maxWorkers;
+      $("collection").value = localStorage.getItem("collection") ?? config.defaultCollection;
+      const savedPublic = localStorage.getItem("public");
+      $(savedPublic === null ? (config.defaultPublic ? "public" : "private") : savedPublic === "1" ? "public" : "private").checked = true;
+
+      const jobs = await loadHistory();
+      const active = jobs && jobs.find((j) => j.status === "running" || j.status === "queued");
+      if (active) showJob(active.id);
+    })();
+  </script>
+</body>
+</html>

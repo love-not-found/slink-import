@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slink importer · Login</title>
+  <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+  <main>
+    <form class="panel login" id="login">
+      <h1 style="margin-bottom: 16px">Slink importer</h1>
+      <label for="password">Password</label>
+      <input type="password" id="password" autocomplete="current-password" autofocus required>
+      <div class="actions">
+        <button class="primary" type="submit">Log in</button>
+        <span class="error" id="error"></span>
+      </div>
+    </form>
+  </main>
+  <script>
+    document.getElementById("login").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const error = document.getElementById("error");
+      error.textContent = "";
+      const resp = await fetch("auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: document.getElementById("password").value }),
+      });
+      if (resp.ok) location.href = "./";
+      else error.textContent = resp.status === 401 ? "Wrong password" : `Error ${resp.status}`;
+    });
+  </script>
+</body>
+</html>
