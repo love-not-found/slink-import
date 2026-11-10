@@ -6,6 +6,9 @@ services:
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
     environment:
+      # User/group the app runs as; set to the owner of the data directory (`id -u` / `id -g`)
+      PUID: ${PUID:-10001}
+      PGID: ${PGID:-10001}
       # Public address of your Slink instance (also sent as the Origin header)
       SLINK_URL: ${SLINK_URL:?set SLINK_URL, e.g. https://i.hellish.dev}
       # Slink API key (Profile -> API Keys)

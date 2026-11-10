@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -44,11 +45,24 @@ class RetryBody(BaseModel):
     workers: int | None = None
 
 
+def check_writable(data_dir: Path) -> None:
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".write-test"
+        probe.write_text("ok")
+        probe.unlink()
+    except OSError as e:
+        raise ConfigError(
+            f"{data_dir} is not writable by uid {os.getuid()}: {e.strerror}. "
+            "Set PUID/PGID to the owner of the data directory."
+        ) from e
+
+
 def create_app(settings: Settings) -> FastAPI:
     if settings.default_collection:
         parse_collection(settings.default_collection)
 
-    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    check_writable(settings.data_dir)
     client = SlinkClient(settings.slink_url, settings.api_key, settings.max_image_bytes)
     state = StateStore(settings.data_dir / "state.json")
     jobs = JobManager(client, state, settings.data_dir / "jobs.json")

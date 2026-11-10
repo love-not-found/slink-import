@@ -1,4 +1,5 @@
 *
 !app/
 !requirements.txt
+!entrypoint.sh
 **/__pycache__

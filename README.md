@@ -25,6 +25,7 @@ uploads it to Slink through the external upload API, several at a time.
 | `DEFAULT_PUBLIC` | `false` | Default visibility in the form. |
 | `DEFAULT_COLLECTION` | empty | Default collection ID or URL in the form. |
 | `MAX_IMAGE_MB` | `50` | Images larger than this are rejected. |
+| `PUID` / `PGID` | `10001` | User and group the app runs as. Set them to the owner of the data directory (`id -u` / `id -g` on the host) when using a bind mount. On startup the data directory is handed to this user. |
 | `DATA_DIR` | `/data` | Where `state.json` (imported links) and `jobs.json` (history) are stored. |
 
 The collection field takes the ID from the collection's URL (`/collection/<id>`) or the whole
