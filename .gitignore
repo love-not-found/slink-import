@@ -6,6 +6,7 @@ api.secret
 links.txt
 slink_import_state.json
 failed-links.txt
+data/
 *.tmp
 
 # Nix
