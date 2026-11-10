@@ -96,9 +96,10 @@ def main() -> int:
         help="Slink base URL (env: SLINK_URL, default: %(default)s)",
     )
     parser.add_argument(
-        "--api-key",
-        default=os.environ.get("SLINK_API_KEY"),
-        help="Slink API key (env: SLINK_API_KEY)",
+        "--api-key-file",
+        type=Path,
+        default=Path("api.secret"),
+        help="file containing the Slink API key (default: %(default)s)",
     )
     parser.add_argument("--public", action="store_true", help="mark uploaded images as public")
     parser.add_argument(
@@ -116,8 +117,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="only download, don't upload")
     args = parser.parse_args()
 
-    if not args.api_key and not args.dry_run:
-        parser.error("an API key is required (--api-key or SLINK_API_KEY)")
+    api_key = ""
+    if not args.dry_run:
+        if not args.api_key_file.is_file():
+            parser.error(f"API key file not found: {args.api_key_file}")
+        api_key = args.api_key_file.read_text().strip()
+        if not api_key:
+            parser.error(f"API key file is empty: {args.api_key_file}")
 
     base_url = args.url.rstrip("/")
     links = read_links(args.links)
@@ -141,7 +147,7 @@ def main() -> int:
             result = upload(
                 session,
                 base_url,
-                args.api_key,
+                api_key,
                 data,
                 filename,
                 content_type,
