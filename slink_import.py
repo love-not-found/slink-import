@@ -11,6 +11,7 @@ import mimetypes
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -55,6 +56,15 @@ def filename_from(url: str, content_type: str | None) -> str:
     return name
 
 
+def collection_id(value: str) -> str:
+    # Accept either a bare UUID or a full collection URL
+    candidate = value.rstrip("/").rsplit("/", 1)[-1]
+    try:
+        return str(uuid.UUID(candidate))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a valid collection ID or URL: {value}")
+
+
 def byte_bar(desc: str, total: int | None) -> tqdm:
     return tqdm(
         total=total,
@@ -97,14 +107,15 @@ def upload(
     content_type: str,
     public: bool,
     description: str,
+    collection_ids: list[str],
 ) -> dict:
-    encoder = MultipartEncoder(
-        fields={
-            "image": (filename, data, content_type),
-            "isPublic": "true" if public else "false",
-            "description": description,
-        }
-    )
+    fields = [
+        ("image", (filename, data, content_type)),
+        ("isPublic", "true" if public else "false"),
+        ("description", description),
+    ]
+    fields += [("collectionIds[]", cid) for cid in collection_ids]
+    encoder = MultipartEncoder(fields=fields)
     with byte_bar(f"↑ {filename}", encoder.len) as bar:
         sent = 0
 
@@ -147,6 +158,15 @@ def main() -> int:
         "--description",
         default="",
         help="description to set on every image ('{url}' is replaced with the source link)",
+    )
+    parser.add_argument(
+        "--collection",
+        action="append",
+        default=[],
+        type=collection_id,
+        metavar="ID",
+        help="ID of a collection to add images to; repeatable "
+        "(the UUID in the collection's URL, e.g. /collection/<ID>)",
     )
     parser.add_argument(
         "--state",
@@ -198,6 +218,7 @@ def main() -> int:
                 content_type,
                 args.public,
                 args.description.replace("{url}", link)[:255],
+                args.collection,
             )
             state[link] = {"id": result.get("id"), "url": f"{base_url}/{result.get('url', '')}"}
             save_state(args.state, state)
