@@ -26,10 +26,12 @@ uploads it to Slink through the external upload API, several at a time.
 | `DEFAULT_COLLECTION` | empty | Default collection ID or URL in the form. |
 | `MAX_IMAGE_MB` | `50` | Images larger than this are rejected. |
 | `PUID` / `PGID` | `10001` | User and group the app runs as. Set them to the owner of the data directory (`id -u` / `id -g` on the host) when using a bind mount. On startup the data directory is handed to this user. |
-| `DATA_DIR` | `/data` | Where `state.json` (imported links) and `jobs.json` (history) are stored. |
+| `DATA_DIR` | `/data` | Where `state.json` (imported links), `jobs.json` (history) and `collections.json` (saved collections) are stored. |
 
-The collection field takes the ID from the collection's URL (`/collection/<id>`) or the whole
-URL. Slink API keys can't list or create collections, so create the collection in Slink first.
+Collections are picked from a dropdown. Use **Manage** to save a collection under a name by
+pasting its link (`/collection/<id>`) or ID once; saved collections are stored on the server, so
+they're available in every browser. **Other link…** imports into an unsaved collection. Slink API
+keys can't list or create collections, so create the collection in Slink first.
 
 ## Deploying with Portainer
 
