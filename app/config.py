@@ -78,7 +78,8 @@ def load_settings() -> Settings:
 
     return Settings(
         slink_url=slink_url,
-        api_key=_secret("SLINK_API_KEY"),
+        # Optional: accounts can also be added in the UI
+        api_key=_secret("SLINK_API_KEY", required=False),
         ui_password=_secret("UI_PASSWORD"),
         # Without a fixed secret, logins only last until the container restarts
         session_secret=_secret("SESSION_SECRET", required=False) or secrets.token_urlsafe(32),

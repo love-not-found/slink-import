@@ -6,15 +6,50 @@ import threading
 import uuid
 from pathlib import Path
 
+from typing import Callable
+
+from .accounts import DEFAULT_ACCOUNT, AccountStore
 from .importer import ImportOptions, SlinkClient, StateStore, now, run_import
 
 HISTORY_LIMIT = 25
 
 
+class AccountStates:
+    """Imported-link records, kept separately per account so each can import the same link."""
+
+    def __init__(self, data_dir: Path):
+        self.data_dir = data_dir
+        self._lock = threading.Lock()
+        self._stores: dict[str, StateStore] = {}
+
+    def _path(self, account_id: str) -> Path:
+        # The default account keeps the original file name, so existing history still applies
+        name = "state.json" if account_id == DEFAULT_ACCOUNT else f"state-{account_id}.json"
+        return self.data_dir / name
+
+    def get(self, account_id: str) -> StateStore:
+        with self._lock:
+            if account_id not in self._stores:
+                self._stores[account_id] = StateStore(self._path(account_id))
+            return self._stores[account_id]
+
+    def remove(self, account_id: str) -> None:
+        with self._lock:
+            self._stores.pop(account_id, None)
+            self._path(account_id).unlink(missing_ok=True)
+
+
 class JobManager:
-    def __init__(self, client: SlinkClient, state: StateStore, history_path: Path):
-        self.client = client
-        self.state = state
+    def __init__(
+        self,
+        accounts: AccountStore,
+        states: AccountStates,
+        make_client: Callable[[str], SlinkClient],
+        history_path: Path,
+    ):
+        self.accounts = accounts
+        self.states = states
+        self.make_client = make_client
         self.history_path = history_path
         self._lock = threading.Lock()
         self._jobs: dict[str, dict] = {}
@@ -26,6 +61,7 @@ class JobManager:
         if not self.history_path.exists():
             return
         for job in json.loads(self.history_path.read_text()):
+            job.setdefault("account", {"id": DEFAULT_ACCOUNT, "name": "Default"})
             if job["status"] in ("queued", "running"):
                 job["status"] = "interrupted"
                 for item in job["items"]:
@@ -43,11 +79,17 @@ class JobManager:
         tmp.replace(self.history_path)
 
     def create(
-        self, links: list[str], options: ImportOptions, workers: int, force: bool
+        self,
+        links: list[str],
+        options: ImportOptions,
+        workers: int,
+        force: bool,
+        account: dict,
     ) -> dict:
+        state = self.states.get(account["id"])
         items = []
         for link in links:
-            previous = None if force else self.state.get(link)
+            previous = None if force else state.get(link)
             if previous and previous.get("status", "ok") == "ok":
                 items.append({"link": link, "status": "skipped", "url": previous.get("url")})
             else:
@@ -58,6 +100,7 @@ class JobManager:
             "finished": None,
             "status": "queued",
             "workers": workers,
+            "account": {"id": account["id"], "name": account["name"]},
             "options": {
                 "public": options.public,
                 "description": options.description,
@@ -101,6 +144,7 @@ class JobManager:
                 o = job["options"]
                 options = ImportOptions(o["public"], o["description"], tuple(o["collectionIds"]))
                 workers = job["workers"]
+                account_id = job["account"]["id"]
 
             def on_update(link: str, entry: dict) -> None:
                 with self._lock:
@@ -108,11 +152,19 @@ class JobManager:
                     if entry["status"] != "running":
                         self._save_history()
 
-            try:
-                run_import(self.client, self.state, pending, options, workers, on_update)
-                status = "done"
-            except Exception:
+            account = self.accounts.get(account_id)
+            if account is None:
+                for link in pending:
+                    on_update(link, {"status": "failed", "error": "this account was removed", "at": now()})
                 status = "error"
+            else:
+                try:
+                    client = self.make_client(account["key"])
+                    state = self.states.get(account_id)
+                    run_import(client, state, pending, options, workers, on_update)
+                    status = "done"
+                except Exception:
+                    status = "error"
             with self._lock:
                 job["status"] = status
                 job["finished"] = now()

@@ -16,12 +16,12 @@ from .config import ConfigError, Settings, load_settings
 from .importer import (
     ImportOptions,
     SlinkClient,
-    StateStore,
     format_failed_links,
     parse_collection,
     parse_links,
 )
-from .jobs import JobManager
+from .accounts import DEFAULT_ACCOUNT, AccountStore
+from .jobs import AccountStates, JobManager
 from .saved_collections import CollectionStore
 
 STATIC = Path(__file__).parent / "static"
@@ -36,6 +36,7 @@ class LoginBody(BaseModel):
 class JobBody(BaseModel):
     links: str
     public: bool = False
+    account: str = DEFAULT_ACCOUNT
     collection: str = ""
     description: str = Field("", max_length=255)
     workers: int | None = None
@@ -49,6 +50,12 @@ class RetryBody(BaseModel):
 class CollectionBody(BaseModel):
     name: str
     link: str
+    account: str = DEFAULT_ACCOUNT
+
+
+class AccountBody(BaseModel):
+    name: str
+    key: str
 
 
 def check_writable(data_dir: Path) -> None:
@@ -69,9 +76,14 @@ def create_app(settings: Settings) -> FastAPI:
         parse_collection(settings.default_collection)
 
     check_writable(settings.data_dir)
-    client = SlinkClient(settings.slink_url, settings.api_key, settings.max_image_bytes)
-    state = StateStore(settings.data_dir / "state.json")
-    jobs = JobManager(client, state, settings.data_dir / "jobs.json")
+    accounts = AccountStore(settings.data_dir / "accounts.json", settings.api_key)
+    states = AccountStates(settings.data_dir)
+    jobs = JobManager(
+        accounts,
+        states,
+        lambda key: SlinkClient(settings.slink_url, key, settings.max_image_bytes),
+        settings.data_dir / "jobs.json",
+    )
     collections = CollectionStore(settings.data_dir / "collections.json")
     signer = TimestampSigner(settings.session_secret, salt="slink-import-login")
 
@@ -89,6 +101,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     def clamp_workers(value: int | None) -> int:
         return max(1, min(value or settings.workers, settings.max_workers))
+
+    def require_account(account_id: str) -> dict:
+        account = accounts.get(account_id)
+        if account is None:
+            raise HTTPException(422, "account not found; add one under Manage accounts")
+        return account
 
     def options_from(body: JobBody) -> ImportOptions:
         collection_ids: tuple[str, ...] = ()
@@ -148,14 +166,37 @@ def create_app(settings: Settings) -> FastAPI:
             "maxWorkers": settings.max_workers,
         }
 
+    @api.get("/accounts")
+    def list_accounts():
+        return accounts.list()
+
+    @api.post("/accounts", status_code=201)
+    def add_account(body: AccountBody):
+        try:
+            return accounts.add(body.name, body.key)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+
+    @api.delete("/accounts/{account_id}", status_code=204)
+    def delete_account(account_id: str):
+        try:
+            removed = accounts.delete(account_id)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+        if not removed:
+            raise HTTPException(404, "account not found")
+        collections.delete_for_account(account_id)
+        states.remove(account_id)
+
     @api.get("/collections")
     def list_collections():
         return collections.list()
 
     @api.post("/collections", status_code=201)
     def save_collection(body: CollectionBody):
+        require_account(body.account)
         try:
-            return collections.save(body.name, body.link)
+            return collections.save(body.name, body.link, body.account)
         except ValueError as e:
             raise HTTPException(422, str(e)) from None
 
@@ -169,7 +210,9 @@ def create_app(settings: Settings) -> FastAPI:
         links = parse_links(body.links)
         if not links:
             raise HTTPException(422, "no links given")
-        return jobs.create(links, options_from(body), clamp_workers(body.workers), body.force)
+        account = require_account(body.account)
+        options = options_from(body)
+        return jobs.create(links, options, clamp_workers(body.workers), body.force, account)
 
     @api.get("/jobs")
     def list_jobs():
@@ -193,7 +236,8 @@ def create_app(settings: Settings) -> FastAPI:
         o = job["options"]
         options = ImportOptions(o["public"], o["description"], tuple(o["collectionIds"]))
         workers = clamp_workers(body.workers or job["workers"])
-        return jobs.create(list(failures), options, workers, force=False)
+        account = require_account(job["account"]["id"])
+        return jobs.create(list(failures), options, workers, False, account)
 
     @api.get("/jobs/{job_id}/failed-links.txt")
     def failed_links(job_id: str):
