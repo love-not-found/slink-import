@@ -154,9 +154,27 @@ button:disabled { opacity: 0.55; cursor: default; }
 .collection-list small { display: block; color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
 button.small { padding: 4px 10px; font-size: 13px; }
 
-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
-th, td { text-align: left; padding: 7px 6px; border-top: 1px solid var(--border); vertical-align: top; }
-th { color: var(--muted); font-weight: 500; }
+.table-scroll {
+  max-height: 420px;
+  overflow-y: auto;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+tbody tr:first-child td { border-top: none; }
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-top: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 500;
+}
 td.link { word-break: break-all; }
 td.link small { display: block; color: var(--fail); }
 a { color: var(--accent); }
