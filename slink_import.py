@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -45,6 +46,23 @@ def save_state(path: Path, state: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(state, indent=2))
     tmp.replace(path)
+
+
+def is_imported(state: dict, link: str) -> bool:
+    # Entries written before "status" existed were always successful imports
+    entry = state.get(link)
+    return entry is not None and entry.get("status", "ok") == "ok"
+
+
+def save_failed_links(path: Path, failures: dict[str, str]) -> None:
+    if not failures:
+        path.unlink(missing_ok=True)
+        return
+    lines = []
+    for link, error in failures.items():
+        lines.append(f"# {' '.join(error.split())}")
+        lines.append(link)
+    path.write_text("\n".join(lines) + "\n")
 
 
 def filename_from(url: str, content_type: str | None) -> str:
@@ -176,6 +194,13 @@ def main() -> int:
         default=Path("slink_import_state.json"),
         help="file tracking already imported links, so reruns skip them (default: %(default)s)",
     )
+    parser.add_argument(
+        "--failed",
+        type=Path,
+        default=Path("failed-links.txt"),
+        help="where to write links that failed this run, usable as input for a retry "
+        "(default: %(default)s)",
+    )
     parser.add_argument("--delay", type=float, default=0.5, help="seconds to wait between images")
     parser.add_argument("--dry-run", action="store_true", help="only download, don't upload")
     args = parser.parse_args()
@@ -195,47 +220,81 @@ def main() -> int:
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
 
-    pending = [link for link in links if link not in state]
+    pending = [link for link in links if not is_imported(state, link)]
     skipped = len(links) - len(pending)
     if skipped:
         print(f"Skipping {skipped} already imported link(s)")
 
-    done = failed = 0
+    done = 0
+    failures: dict[str, str] = {}
     progress = tqdm(total=len(pending), desc="Importing", unit="img", position=0)
-    for link in pending:
-        try:
-            data, filename, content_type = download(session, link)
-            if args.dry_run:
-                tqdm.write(f"OK (dry run) {link} -> {filename} ({len(data)} bytes)")
-                done += 1
-                progress.set_postfix(ok=done, failed=failed)
-                progress.update()
-                continue
-            result = upload(
-                session,
-                base_url,
-                api_key,
-                data,
-                filename,
-                content_type,
-                args.public,
-                args.description.replace("{url}", link)[:255],
-                args.collection,
+    try:
+        for link in pending:
+            done += import_one(
+                session, link, args, base_url, api_key, state, failures
             )
-            state[link] = {"id": result.get("id"), "url": f"{base_url}/{result.get('url', '')}"}
-            save_state(args.state, state)
-            tqdm.write(f"OK {link} -> {state[link]['url']}")
-            done += 1
-        except Exception as e:  # keep going on individual failures
-            tqdm.write(f"FAIL {link}: {e}", file=sys.stderr)
-            failed += 1
-        progress.set_postfix(ok=done, failed=failed)
-        progress.update()
-        time.sleep(args.delay)
-    progress.close()
+            progress.set_postfix(ok=done, failed=len(failures))
+            progress.update()
+            time.sleep(args.delay)
+    finally:
+        progress.close()
+        save_failed_links(args.failed, failures)
 
-    print(f"\nImported: {done}, skipped (already imported): {skipped}, failed: {failed}")
-    return 1 if failed else 0
+    print(
+        f"\nImported: {done}, skipped (already imported): {skipped}, failed: {len(failures)}"
+    )
+    if failures:
+        print(f"Failed links saved to {args.failed}, pass that file as input to retry them")
+    return 1 if failures else 0
+
+
+def import_one(
+    session: requests.Session,
+    link: str,
+    args: argparse.Namespace,
+    base_url: str,
+    api_key: str,
+    state: dict,
+    failures: dict[str, str],
+) -> int:
+    """Import a single link, returning 1 on success and 0 on failure."""
+    try:
+        data, filename, content_type = download(session, link)
+        if args.dry_run:
+            tqdm.write(f"OK (dry run) {link} -> {filename} ({len(data)} bytes)")
+            return 1
+        result = upload(
+            session,
+            base_url,
+            api_key,
+            data,
+            filename,
+            content_type,
+            args.public,
+            args.description.replace("{url}", link)[:255],
+            args.collection,
+        )
+        state[link] = {
+            "status": "ok",
+            "id": result.get("id"),
+            "url": f"{base_url}/{result.get('url', '')}",
+        }
+        save_state(args.state, state)
+        tqdm.write(f"OK {link} -> {state[link]['url']}")
+        return 1
+    except Exception as e:  # keep going on individual failures
+        error = str(e)
+        failures[link] = error
+        tqdm.write(f"FAIL {link}: {error}", file=sys.stderr)
+        if not args.dry_run:
+            state[link] = {
+                "status": "failed",
+                "error": error,
+                "failedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+            save_state(args.state, state)
+        save_failed_links(args.failed, failures)
+        return 0
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ api.secret
 # Personal import data
 links.txt
 slink_import_state.json
+failed-links.txt
 *.tmp
 
 # Nix
