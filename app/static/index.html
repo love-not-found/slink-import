@@ -29,8 +29,12 @@
           </div>
         </div>
         <div>
-          <label for="collection">Collection <span class="hint">ID or URL, optional</span></label>
-          <input type="text" id="collection" placeholder="https://…/collection/&lt;id&gt;">
+          <label for="collection-select">Collection <span class="hint">optional</span></label>
+          <div class="row">
+            <select id="collection-select"></select>
+            <button type="button" id="manage-collections" aria-expanded="false">Manage</button>
+          </div>
+          <input type="text" id="collection" class="spaced" placeholder="Paste collection link or ID" hidden>
         </div>
         <div>
           <label for="description">Description <span class="hint">optional</span></label>
@@ -40,6 +44,17 @@
           <label for="workers">Parallel uploads</label>
           <input type="number" id="workers" min="1">
         </div>
+      </div>
+
+      <div class="subpanel" id="collections-panel" hidden>
+        <h3>Saved collections</h3>
+        <ul class="collection-list" id="collection-list"></ul>
+        <div class="row">
+          <input type="text" id="new-collection-name" placeholder="Name" maxlength="100">
+          <input type="text" id="new-collection-link" placeholder="https://…/collection/&lt;id&gt;">
+          <button type="button" id="add-collection">Save</button>
+        </div>
+        <span class="error" id="collection-error"></span>
       </div>
 
       <div class="actions">
@@ -74,8 +89,79 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const STATUS_LABEL = { ok: "OK", failed: "Failed", running: "Uploading", pending: "Waiting", skipped: "Skipped" };
+    const OTHER = "__other";
     let currentJob = null;
     let pollTimer = null;
+    let savedCollections = [];
+
+    // Last path segment of a collection URL, or the ID itself
+    function collectionId(value) {
+      return (value || "").trim().replace(/\/+$/, "").split("/").pop().toLowerCase();
+    }
+
+    function collectionName(id) {
+      const found = savedCollections.find((c) => c.id === collectionId(id));
+      return found ? found.name : id;
+    }
+
+    function selectedCollection() {
+      const value = $("collection-select").value;
+      return value === OTHER ? $("collection").value.trim() : value;
+    }
+
+    // Show `value` (saved ID, pasted link, or empty) in the dropdown
+    function selectCollection(value) {
+      const id = collectionId(value);
+      const saved = savedCollections.some((c) => c.id === id);
+      $("collection-select").value = !value ? "" : saved ? id : OTHER;
+      $("collection").value = saved || !value ? "" : value;
+      $("collection").hidden = $("collection-select").value !== OTHER;
+    }
+
+    function renderCollections() {
+      const current = selectedCollection();
+      $("collection-select").replaceChildren(
+        el("option", { value: "" }, "No collection"),
+        ...savedCollections.map((c) => el("option", { value: c.id }, c.name)),
+        el("option", { value: OTHER }, "Other link…"),
+      );
+      selectCollection(current);
+
+      $("collection-list").replaceChildren(...(savedCollections.length ? savedCollections.map((c) => {
+        const remove = el("button", { type: "button", className: "small", title: `Remove ${c.name}` }, "Remove");
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Remove saved collection "${c.name}"? The collection in Slink is not affected.`)) return;
+          try {
+            await api(`collections/${c.id}`, { method: "DELETE" });
+            await loadCollections();
+          } catch (err) {
+            $("collection-error").textContent = err.message;
+          }
+        });
+        return el("li", {}, el("span", {}, el("b", {}, c.name), el("small", {}, c.id)), remove);
+      }) : [el("li", { className: "hint" }, "None saved yet")]));
+    }
+
+    async function loadCollections() {
+      savedCollections = await api("collections");
+      renderCollections();
+    }
+
+    async function addCollection() {
+      $("collection-error").textContent = "";
+      try {
+        const saved = await api("collections", {
+          method: "POST",
+          body: JSON.stringify({ name: $("new-collection-name").value, link: $("new-collection-link").value }),
+        });
+        $("new-collection-name").value = "";
+        $("new-collection-link").value = "";
+        await loadCollections();
+        selectCollection(saved.id);
+      } catch (err) {
+        $("collection-error").textContent = err.message;
+      }
+    }
 
     async function api(path, options = {}) {
       const resp = await fetch(`api/${path}`, {
@@ -124,6 +210,7 @@
 
       $("job-summary").replaceChildren(
         ...[["Done", `${finished}/${c.total}`], ["OK", c.ok], ["Failed", c.failed], ["Skipped", c.skipped],
+            ["Collection", job.options.collectionIds.map(collectionName).join(", ") || "none"],
             ["Started", formatTime(job.created)]]
           .map(([k, v]) => el("span", {}, `${k}: `, el("b", {}, String(v))))
       );
@@ -177,7 +264,7 @@
       $("form-error").textContent = "";
       $("submit").disabled = true;
       try {
-        const collection = $("collection").value.trim();
+        const collection = selectedCollection();
         const job = await api("jobs", {
           method: "POST",
           body: JSON.stringify({
@@ -217,6 +304,35 @@
       setTimeout(() => ($("copy-urls").textContent = "Copy Slink URLs"), 1500);
     });
 
+    $("collection-select").addEventListener("change", () => {
+      const other = $("collection-select").value === OTHER;
+      $("collection").hidden = !other;
+      if (other) $("collection").focus();
+    });
+
+    $("manage-collections").addEventListener("click", () => {
+      const panel = $("collections-panel");
+      panel.hidden = !panel.hidden;
+      $("manage-collections").setAttribute("aria-expanded", String(!panel.hidden));
+      if (panel.hidden) return;
+      // Offer to save a pasted link that isn't saved yet
+      if ($("collection-select").value === OTHER && $("collection").value.trim()) {
+        $("new-collection-link").value = $("collection").value.trim();
+      }
+      $("new-collection-name").focus();
+    });
+
+    $("add-collection").addEventListener("click", addCollection);
+    for (const id of ["new-collection-name", "new-collection-link"]) {
+      // Enter saves the collection instead of submitting the import form
+      $(id).addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addCollection();
+        }
+      });
+    }
+
     $("logout").addEventListener("click", async () => {
       await fetch("auth/logout", { method: "POST" });
       location.href = "login";
@@ -227,7 +343,8 @@
       $("slink-link").href = config.slinkUrl;
       $("workers").value = config.workers;
       $("workers").max = config.maxWorkers;
-      $("collection").value = localStorage.getItem("collection") ?? config.defaultCollection;
+      await loadCollections();
+      selectCollection(localStorage.getItem("collection") ?? config.defaultCollection);
       const savedPublic = localStorage.getItem("public");
       $(savedPublic === null ? (config.defaultPublic ? "public" : "private") : savedPublic === "1" ? "public" : "private").checked = true;
 

@@ -65,7 +65,7 @@ h2 { font-size: 16px; margin: 0 0 12px; }
 label { display: block; font-weight: 600; margin-bottom: 6px; }
 .hint { color: var(--muted); font-size: 13px; font-weight: 400; }
 
-textarea, input[type="text"], input[type="password"], input[type="number"] {
+textarea, select, input[type="text"], input[type="password"], input[type="number"] {
   width: 100%;
   padding: 9px 11px;
   border: 1px solid var(--border);
@@ -126,6 +126,33 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 .summary { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
 .summary b { color: var(--text); }
+
+.row { display: flex; gap: 8px; align-items: center; }
+.row > input, .row > select { flex: 1; min-width: 0; }
+.spaced { margin-top: 8px; }
+
+.subpanel {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.subpanel h3 { font-size: 14px; margin: 0 0 8px; }
+.subpanel input[type="text"] { background: var(--panel); }
+
+.collection-list { list-style: none; padding: 0; margin: 0 0 12px; }
+.collection-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.collection-list li:first-child { border-top: none; }
+.collection-list small { display: block; color: var(--muted); font-family: ui-monospace, monospace; font-size: 12px; }
+button.small { padding: 4px 10px; font-size: 13px; }
 
 table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
 th, td { text-align: left; padding: 7px 6px; border-top: 1px solid var(--border); vertical-align: top; }

@@ -22,6 +22,7 @@ from .importer import (
     parse_links,
 )
 from .jobs import JobManager
+from .saved_collections import CollectionStore
 
 STATIC = Path(__file__).parent / "static"
 COOKIE = "slink_import_session"
@@ -45,6 +46,11 @@ class RetryBody(BaseModel):
     workers: int | None = None
 
 
+class CollectionBody(BaseModel):
+    name: str
+    link: str
+
+
 def check_writable(data_dir: Path) -> None:
     try:
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +72,7 @@ def create_app(settings: Settings) -> FastAPI:
     client = SlinkClient(settings.slink_url, settings.api_key, settings.max_image_bytes)
     state = StateStore(settings.data_dir / "state.json")
     jobs = JobManager(client, state, settings.data_dir / "jobs.json")
+    collections = CollectionStore(settings.data_dir / "collections.json")
     signer = TimestampSigner(settings.session_secret, salt="slink-import-login")
 
     def logged_in(request: Request) -> bool:
@@ -140,6 +147,22 @@ def create_app(settings: Settings) -> FastAPI:
             "workers": settings.workers,
             "maxWorkers": settings.max_workers,
         }
+
+    @api.get("/collections")
+    def list_collections():
+        return collections.list()
+
+    @api.post("/collections", status_code=201)
+    def save_collection(body: CollectionBody):
+        try:
+            return collections.save(body.name, body.link)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from None
+
+    @api.delete("/collections/{collection_id}", status_code=204)
+    def delete_collection(collection_id: str):
+        if not collections.delete(collection_id):
+            raise HTTPException(404, "collection not found")
 
     @api.post("/jobs", status_code=201)
     def create_job(body: JobBody):
