@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import requests
+from requests_toolbelt import MultipartEncoder, MultipartEncoderMonitor
+from tqdm import tqdm
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -53,16 +55,37 @@ def filename_from(url: str, content_type: str | None) -> str:
     return name
 
 
+def byte_bar(desc: str, total: int | None) -> tqdm:
+    return tqdm(
+        total=total,
+        desc=desc,
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        leave=False,
+        position=1,
+    )
+
+
 def download(session: requests.Session, url: str) -> tuple[bytes, str, str]:
-    resp = session.get(url, timeout=60, headers={"Referer": "https://postimg.cc/"})
-    resp.raise_for_status()
-    content_type = resp.headers.get("Content-Type", "")
-    if not content_type.startswith("image/"):
-        raise ValueError(
-            f"not an image (Content-Type: {content_type or 'unknown'}); "
-            "is this a direct i.postimg.cc link?"
-        )
-    return resp.content, filename_from(url, content_type), content_type
+    with session.get(
+        url, timeout=60, stream=True, headers={"Referer": "https://postimg.cc/"}
+    ) as resp:
+        resp.raise_for_status()
+        content_type = resp.headers.get("Content-Type", "")
+        if not content_type.startswith("image/"):
+            raise ValueError(
+                f"not an image (Content-Type: {content_type or 'unknown'}); "
+                "is this a direct i.postimg.cc link?"
+            )
+        filename = filename_from(url, content_type)
+        total = int(resp.headers.get("Content-Length", 0)) or None
+        chunks = []
+        with byte_bar(f"↓ {filename}", total) as bar:
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                chunks.append(chunk)
+                bar.update(len(chunk))
+    return b"".join(chunks), filename, content_type
 
 
 def upload(
@@ -75,13 +98,31 @@ def upload(
     public: bool,
     description: str,
 ) -> dict:
-    resp = session.post(
-        f"{base_url}/api/external/upload",
-        headers={"Authorization": f"Bearer {api_key}"},
-        files={"image": (filename, data, content_type)},
-        data={"isPublic": "true" if public else "false", "description": description},
-        timeout=120,
+    encoder = MultipartEncoder(
+        fields={
+            "image": (filename, data, content_type),
+            "isPublic": "true" if public else "false",
+            "description": description,
+        }
     )
+    with byte_bar(f"↑ {filename}", encoder.len) as bar:
+        sent = 0
+
+        def on_progress(monitor: MultipartEncoderMonitor) -> None:
+            nonlocal sent
+            bar.update(monitor.bytes_read - sent)
+            sent = monitor.bytes_read
+
+        monitor = MultipartEncoderMonitor(encoder, on_progress)
+        resp = session.post(
+            f"{base_url}/api/external/upload",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": monitor.content_type,
+            },
+            data=monitor,
+            timeout=120,
+        )
     if resp.status_code != 201:
         raise RuntimeError(f"upload failed ({resp.status_code}): {resp.text[:500]}")
     return resp.json()
@@ -132,17 +173,21 @@ def main() -> int:
     session = requests.Session()
     session.headers["User-Agent"] = USER_AGENT
 
-    done = failed = skipped = 0
-    for i, link in enumerate(links, 1):
-        prefix = f"[{i}/{len(links)}]"
-        if link in state:
-            skipped += 1
-            continue
+    pending = [link for link in links if link not in state]
+    skipped = len(links) - len(pending)
+    if skipped:
+        print(f"Skipping {skipped} already imported link(s)")
+
+    done = failed = 0
+    progress = tqdm(total=len(pending), desc="Importing", unit="img", position=0)
+    for link in pending:
         try:
             data, filename, content_type = download(session, link)
             if args.dry_run:
-                print(f"{prefix} OK (dry run) {link} -> {filename} ({len(data)} bytes)")
+                tqdm.write(f"OK (dry run) {link} -> {filename} ({len(data)} bytes)")
                 done += 1
+                progress.set_postfix(ok=done, failed=failed)
+                progress.update()
                 continue
             result = upload(
                 session,
@@ -156,12 +201,15 @@ def main() -> int:
             )
             state[link] = {"id": result.get("id"), "url": f"{base_url}/{result.get('url', '')}"}
             save_state(args.state, state)
-            print(f"{prefix} OK {link} -> {state[link]['url']}")
+            tqdm.write(f"OK {link} -> {state[link]['url']}")
             done += 1
         except Exception as e:  # keep going on individual failures
-            print(f"{prefix} FAIL {link}: {e}", file=sys.stderr)
+            tqdm.write(f"FAIL {link}: {e}", file=sys.stderr)
             failed += 1
+        progress.set_postfix(ok=done, failed=failed)
+        progress.update()
         time.sleep(args.delay)
+    progress.close()
 
     print(f"\nImported: {done}, skipped (already imported): {skipped}, failed: {failed}")
     return 1 if failed else 0

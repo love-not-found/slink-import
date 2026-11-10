@@ -18,7 +18,11 @@
           system:
           let
             pkgs = nixpkgs.legacyPackages.${system};
-            python = pkgs.python3.withPackages (ps: [ ps.requests ]);
+            python = pkgs.python3.withPackages (ps: [
+              ps.requests
+              ps.requests-toolbelt
+              ps.tqdm
+            ]);
           in
           f { inherit pkgs python; }
         );
